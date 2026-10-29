@@ -83,6 +83,80 @@ func listNotes(db *sqlx.DB) echo.HandlerFunc {
 	}
 }
 
+// parseNoteID reads the :id path parameter, rejecting anything that is not a positive whole
+// number.
+func parseNoteID(c echo.Context) (int64, error) {
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil || id < 1 {
+		return 0, errors.New("invalid note id")
+	}
+	return id, nil
+}
+
+// updateNote handles PUT /notes/:id. The id is checked and the note loaded before the body is
+// looked at, so a missing note is a 404 even when the body is invalid too. It is a full
+// replacement: an omitted body stores the empty string, while id and created_at are kept.
+func updateNote(db *sqlx.DB) echo.HandlerFunc {
+	return func(c echo.Context) error {
+		id, err := parseNoteID(c)
+		if err != nil {
+			return writeError(c, http.StatusBadRequest, "invalid note id")
+		}
+
+		var note Note
+		err = db.GetContext(c.Request().Context(), &note,
+			"SELECT id, title, body, created_at FROM notes WHERE id = ?", id)
+		if errors.Is(err, sql.ErrNoRows) {
+			return writeError(c, http.StatusNotFound, "note not found")
+		}
+		if err != nil {
+			return writeError(c, http.StatusInternalServerError, "loading note")
+		}
+
+		var req noteRequest
+		if err := c.Bind(&req); err != nil {
+			return writeError(c, http.StatusBadRequest, "invalid JSON body")
+		}
+		if err := req.validate(); err != nil {
+			return writeError(c, http.StatusBadRequest, err.Error())
+		}
+
+		title := strings.TrimSpace(req.Title)
+		_, err = db.ExecContext(c.Request().Context(),
+			"UPDATE notes SET title = ?, body = ? WHERE id = ?", title, req.Body, id)
+		if err != nil {
+			return writeError(c, http.StatusInternalServerError, "updating note")
+		}
+		note.Title = title
+		note.Body = req.Body
+		return c.JSON(http.StatusOK, note)
+	}
+}
+
+// deleteNote handles DELETE /notes/:id: 204 with no body, or 404 when there was nothing to
+// delete.
+func deleteNote(db *sqlx.DB) echo.HandlerFunc {
+	return func(c echo.Context) error {
+		id, err := parseNoteID(c)
+		if err != nil {
+			return writeError(c, http.StatusBadRequest, "invalid note id")
+		}
+
+		result, err := db.ExecContext(c.Request().Context(), "DELETE FROM notes WHERE id = ?", id)
+		if err != nil {
+			return writeError(c, http.StatusInternalServerError, "deleting note")
+		}
+		affected, err := result.RowsAffected()
+		if err != nil {
+			return writeError(c, http.StatusInternalServerError, "deleting note")
+		}
+		if affected == 0 {
+			return writeError(c, http.StatusNotFound, "note not found")
+		}
+		return c.NoContent(http.StatusNoContent)
+	}
+}
+
 // getNote handles GET /notes/:id. A non-numeric id is a 400, a missing note a 404.
 func getNote(db *sqlx.DB) echo.HandlerFunc {
 	return func(c echo.Context) error {

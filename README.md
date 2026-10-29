@@ -26,8 +26,12 @@ PORT=8080 DB_PATH=notes.db go run ./cmd/server
 | POST | `/notes` | `{title, body?}`; title 1-200 characters, `201` with the note |
 | GET | `/notes` | every note, oldest first; `[]` when empty |
 | GET | `/notes/:id` | `400` for a bad id, `404` for a missing note |
+| PUT | `/notes/:id` | `{title, body?}`; fully replaces title and body (an omitted body becomes `""`), `id` and `created_at` are kept, `200` with the updated note |
+| DELETE | `/notes/:id` | `204` with no body |
 
-Every error body is `{"error": "<message>"}`.
+Every error body is `{"error": "<message>"}`. On every note route a non-numeric or non-positive id
+is `400` `invalid note id` and a missing note is `404` `note not found` — on `PUT` that `404` wins
+even when the body is invalid too, and a second `DELETE` of the same note is a `404` as well.
 
 ## Conventions
 
