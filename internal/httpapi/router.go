@@ -45,6 +45,8 @@ func NewRouter(db *sqlx.DB) *echo.Echo {
 	e.GET("/notes/:id", getNote(db))
 	e.PUT("/notes/:id", updateNote(db))
 	e.PUT("/notes/:id/tags", putNoteTags(db))
+	e.POST("/notes/:id/publish", publishNote(db))
+	e.POST("/notes/:id/archive", archiveNote(db))
 	e.DELETE("/notes/:id", deleteNote(db))
 	return e
 }

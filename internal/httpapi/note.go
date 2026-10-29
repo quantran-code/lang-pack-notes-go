@@ -20,17 +20,27 @@ const maxTitleLength = 200
 // table, so db:"-" keeps sqlx from scanning or binding it; it is loaded separately, sorted
 // ascending, and always an empty slice when the note has none, so it marshals as [] and not null.
 type Note struct {
-	ID        int64     `db:"id" json:"id"`
-	Title     string    `db:"title" json:"title"`
-	Body      string    `db:"body" json:"body"`
-	CreatedAt time.Time `db:"created_at" json:"created_at"`
-	Tags      []string  `db:"-" json:"tags"`
+	ID        int64      `db:"id" json:"id"`
+	Title     string     `db:"title" json:"title"`
+	Body      string     `db:"body" json:"body"`
+	CreatedAt time.Time  `db:"created_at" json:"created_at"`
+	Status    NoteStatus `db:"status" json:"status"`
+	Tags      []string   `db:"-" json:"tags"`
 }
 
-// noteRequest is the body accepted when a note is created.
+// noteRequest is the title and body a note is written with. It is embedded in createNoteRequest
+// and is the whole body PUT /notes/:id accepts, so neither route has a status field there.
 type noteRequest struct {
 	Title string `json:"title"`
 	Body  string `json:"body"`
+}
+
+// createNoteRequest is the body accepted when a note is created: the title and body of
+// noteRequest plus an optional status. A nil Status, from an absent or null field, means the note
+// is created as a draft; any other value has to name one of the three statuses.
+type createNoteRequest struct {
+	noteRequest
+	Status *string `json:"status"`
 }
 
 // validate applies the rules a note has: a title that is not blank and at most maxTitleLength
@@ -49,7 +59,7 @@ func (r noteRequest) validate() error {
 // createNote handles POST /notes.
 func createNote(db *sqlx.DB) echo.HandlerFunc {
 	return func(c echo.Context) error {
-		var req noteRequest
+		var req createNoteRequest
 		if err := c.Bind(&req); err != nil {
 			return writeError(c, http.StatusBadRequest, "invalid JSON body")
 		}
@@ -57,14 +67,26 @@ func createNote(db *sqlx.DB) echo.HandlerFunc {
 			return writeError(c, http.StatusBadRequest, err.Error())
 		}
 
+		// A note without a status is a draft; anything else sent has to name a status, and an
+		// unknown name creates no note at all.
+		status := StatusDraft
+		if req.Status != nil {
+			parsed, err := parseNoteStatus(*req.Status)
+			if err != nil {
+				return writeError(c, http.StatusBadRequest, err.Error())
+			}
+			status = parsed
+		}
+
 		note := Note{
 			Title:     strings.TrimSpace(req.Title),
 			Body:      req.Body,
 			CreatedAt: time.Now().UTC(),
+			Status:    status,
 			Tags:      []string{},
 		}
 		result, err := db.NamedExecContext(c.Request().Context(),
-			"INSERT INTO notes (title, body, created_at) VALUES (:title, :body, :created_at)", note)
+			"INSERT INTO notes (title, body, created_at, status) VALUES (:title, :body, :created_at, :status)", note)
 		if err != nil {
 			return writeError(c, http.StatusInternalServerError, "creating note")
 		}
@@ -77,39 +99,40 @@ func createNote(db *sqlx.DB) echo.HandlerFunc {
 	}
 }
 
-// listNotes handles GET /notes: every note, oldest first, or with ?tag=<name> only the notes
-// carrying that tag. The slice is made up front so an empty result marshals as [] and not null.
+// listNotes handles GET /notes: every note, oldest first, narrowed by ?tag=<name> and ?status=<name>
+// when either is present, and by both together when they are. The slice is made up front so an
+// empty result marshals as [] and not null.
 func listNotes(db *sqlx.DB) echo.HandlerFunc {
 	return func(c echo.Context) error {
 		ctx := c.Request().Context()
 		notes := make([]Note, 0)
 
 		// QueryParams()["tag"] rather than QueryParam tells an explicitly empty ?tag= apart from
-		// an absent one: only a missing parameter means "every note".
-		tag, filterByTag := c.QueryParams()["tag"]
-		if !filterByTag {
-			err := db.SelectContext(ctx, &notes,
-				"SELECT id, title, body, created_at FROM notes ORDER BY id")
-			if err != nil {
-				return writeError(c, http.StatusInternalServerError, "listing notes")
+		// an absent one: only a missing parameter means "any tag".
+		var tag *string
+		if values, filterByTag := c.QueryParams()["tag"]; filterByTag {
+			if !tagPattern.MatchString(values[0]) {
+				// A value that cannot be a tag matches nothing: an empty list, not a 400, and no
+				// query at all.
+				return c.JSON(http.StatusOK, notes)
 			}
-		} else if !tagPattern.MatchString(tag[0]) {
-			// A value that cannot be a tag matches nothing: an empty list, not a 400, and no
-			// query at all.
-			return c.JSON(http.StatusOK, notes)
-		} else {
-			// The join cannot list a note twice: (note_id, tag_id) is the primary key of
-			// note_tags, so a note has at most one link to the tag being filtered on.
-			err := db.SelectContext(ctx, &notes,
-				`SELECT n.id, n.title, n.body, n.created_at
-				   FROM notes n
-				   JOIN note_tags nt ON nt.note_id = n.id
-				   JOIN tags t       ON t.id = nt.tag_id
-				  WHERE t.name = ?
-				  ORDER BY n.id`, tag[0])
+			tag = &values[0]
+		}
+
+		// A status parameter is different: it only exists to name one of the three statuses, so a
+		// value that names none of them is a 400 rather than an empty list.
+		var status *NoteStatus
+		if values, filterByStatus := c.QueryParams()["status"]; filterByStatus {
+			parsed, err := parseNoteStatus(values[0])
 			if err != nil {
-				return writeError(c, http.StatusInternalServerError, "listing notes")
+				return writeError(c, http.StatusBadRequest, err.Error())
 			}
+			status = &parsed
+		}
+
+		query, args := notesQuery(tag, status)
+		if err := db.SelectContext(ctx, &notes, query, args...); err != nil {
+			return writeError(c, http.StatusInternalServerError, "listing notes")
 		}
 
 		// One statement for the whole page, whatever its size: the tags of every listed note at
@@ -130,6 +153,34 @@ func listNotes(db *sqlx.DB) echo.HandlerFunc {
 		}
 		return c.JSON(http.StatusOK, notes)
 	}
+}
+
+// notesQuery builds the SELECT behind GET /notes: every note, oldest first. Each filter is optional
+// and they are combined with AND, so ?tag=go&status=published lists only the notes that carry the
+// tag and have that status. Only the tag filter needs the joins, and they cannot list a note twice:
+// (note_id, tag_id) is the primary key of note_tags, so a note has at most one link to the tag
+// being filtered on.
+func notesQuery(tag *string, status *NoteStatus) (string, []any) {
+	query := "SELECT n.id, n.title, n.body, n.created_at, n.status FROM notes n"
+	conditions := make([]string, 0, 2)
+	args := make([]any, 0, 2)
+
+	if tag != nil {
+		query += `
+   JOIN note_tags nt ON nt.note_id = n.id
+   JOIN tags t       ON t.id = nt.tag_id`
+		conditions = append(conditions, "t.name = ?")
+		args = append(args, *tag)
+	}
+	if status != nil {
+		conditions = append(conditions, "n.status = ?")
+		args = append(args, *status)
+	}
+	if len(conditions) > 0 {
+		query += "\n  WHERE " + strings.Join(conditions, "\n    AND ")
+	}
+	query += "\n  ORDER BY n.id"
+	return query, args
 }
 
 // parseNoteID reads the :id path parameter, rejecting anything that is not a positive whole
@@ -154,7 +205,7 @@ func updateNote(db *sqlx.DB) echo.HandlerFunc {
 
 		var note Note
 		err = db.GetContext(c.Request().Context(), &note,
-			"SELECT id, title, body, created_at FROM notes WHERE id = ?", id)
+			"SELECT id, title, body, created_at, status FROM notes WHERE id = ?", id)
 		if errors.Is(err, sql.ErrNoRows) {
 			return writeError(c, http.StatusNotFound, "note not found")
 		}
@@ -206,7 +257,7 @@ func putNoteTags(db *sqlx.DB) echo.HandlerFunc {
 
 		var note Note
 		err = db.GetContext(c.Request().Context(), &note,
-			"SELECT id, title, body, created_at FROM notes WHERE id = ?", id)
+			"SELECT id, title, body, created_at, status FROM notes WHERE id = ?", id)
 		if errors.Is(err, sql.ErrNoRows) {
 			return writeError(c, http.StatusNotFound, "note not found")
 		}
@@ -275,7 +326,7 @@ func getNote(db *sqlx.DB) echo.HandlerFunc {
 
 		var note Note
 		err = db.GetContext(c.Request().Context(), &note,
-			"SELECT id, title, body, created_at FROM notes WHERE id = ?", id)
+			"SELECT id, title, body, created_at, status FROM notes WHERE id = ?", id)
 		if errors.Is(err, sql.ErrNoRows) {
 			return writeError(c, http.StatusNotFound, "note not found")
 		}
