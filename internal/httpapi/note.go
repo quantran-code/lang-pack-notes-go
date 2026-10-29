@@ -16,12 +16,15 @@ import (
 // maxTitleLength is the longest title, counted in characters.
 const maxTitleLength = 200
 
-// Note is a stored note. The db tags map the columns for sqlx.
+// Note is a stored note. The db tags map the columns for sqlx. Tags is not a column of the notes
+// table, so db:"-" keeps sqlx from scanning or binding it; it is loaded separately, sorted
+// ascending, and always an empty slice when the note has none, so it marshals as [] and not null.
 type Note struct {
 	ID        int64     `db:"id" json:"id"`
 	Title     string    `db:"title" json:"title"`
 	Body      string    `db:"body" json:"body"`
 	CreatedAt time.Time `db:"created_at" json:"created_at"`
+	Tags      []string  `db:"-" json:"tags"`
 }
 
 // noteRequest is the body accepted when a note is created.
@@ -54,7 +57,12 @@ func createNote(db *sqlx.DB) echo.HandlerFunc {
 			return writeError(c, http.StatusBadRequest, err.Error())
 		}
 
-		note := Note{Title: strings.TrimSpace(req.Title), Body: req.Body, CreatedAt: time.Now().UTC()}
+		note := Note{
+			Title:     strings.TrimSpace(req.Title),
+			Body:      req.Body,
+			CreatedAt: time.Now().UTC(),
+			Tags:      []string{},
+		}
 		result, err := db.NamedExecContext(c.Request().Context(),
 			"INSERT INTO notes (title, body, created_at) VALUES (:title, :body, :created_at)", note)
 		if err != nil {
@@ -69,15 +77,56 @@ func createNote(db *sqlx.DB) echo.HandlerFunc {
 	}
 }
 
-// listNotes handles GET /notes: every note, oldest first. The slice is made up front so an empty
-// table marshals as [] and not null.
+// listNotes handles GET /notes: every note, oldest first, or with ?tag=<name> only the notes
+// carrying that tag. The slice is made up front so an empty result marshals as [] and not null.
 func listNotes(db *sqlx.DB) echo.HandlerFunc {
 	return func(c echo.Context) error {
+		ctx := c.Request().Context()
 		notes := make([]Note, 0)
-		err := db.SelectContext(c.Request().Context(), &notes,
-			"SELECT id, title, body, created_at FROM notes ORDER BY id")
+
+		// QueryParams()["tag"] rather than QueryParam tells an explicitly empty ?tag= apart from
+		// an absent one: only a missing parameter means "every note".
+		tag, filterByTag := c.QueryParams()["tag"]
+		if !filterByTag {
+			err := db.SelectContext(ctx, &notes,
+				"SELECT id, title, body, created_at FROM notes ORDER BY id")
+			if err != nil {
+				return writeError(c, http.StatusInternalServerError, "listing notes")
+			}
+		} else if !tagPattern.MatchString(tag[0]) {
+			// A value that cannot be a tag matches nothing: an empty list, not a 400, and no
+			// query at all.
+			return c.JSON(http.StatusOK, notes)
+		} else {
+			// The join cannot list a note twice: (note_id, tag_id) is the primary key of
+			// note_tags, so a note has at most one link to the tag being filtered on.
+			err := db.SelectContext(ctx, &notes,
+				`SELECT n.id, n.title, n.body, n.created_at
+				   FROM notes n
+				   JOIN note_tags nt ON nt.note_id = n.id
+				   JOIN tags t       ON t.id = nt.tag_id
+				  WHERE t.name = ?
+				  ORDER BY n.id`, tag[0])
+			if err != nil {
+				return writeError(c, http.StatusInternalServerError, "listing notes")
+			}
+		}
+
+		// One statement for the whole page, whatever its size: the tags of every listed note at
+		// once, never one query per note.
+		ids := make([]int64, 0, len(notes))
+		for i := range notes {
+			notes[i].Tags = []string{}
+			ids = append(ids, notes[i].ID)
+		}
+		tags, err := loadTags(ctx, db, ids)
 		if err != nil {
 			return writeError(c, http.StatusInternalServerError, "listing notes")
+		}
+		for i := range notes {
+			if names, ok := tags[notes[i].ID]; ok {
+				notes[i].Tags = names
+			}
 		}
 		return c.JSON(http.StatusOK, notes)
 	}
@@ -129,6 +178,65 @@ func updateNote(db *sqlx.DB) echo.HandlerFunc {
 		}
 		note.Title = title
 		note.Body = req.Body
+
+		// This route replaces title and body only: the note's tags are loaded for the response
+		// but never written, so PUT /notes/:id leaves them exactly as they were.
+		note.Tags = []string{}
+		tags, err := loadTags(c.Request().Context(), db, []int64{note.ID})
+		if err != nil {
+			return writeError(c, http.StatusInternalServerError, "updating note")
+		}
+		if names, ok := tags[note.ID]; ok {
+			note.Tags = names
+		}
+		return c.JSON(http.StatusOK, note)
+	}
+}
+
+// putNoteTags handles PUT /notes/:id/tags: it replaces the note's whole tag set with the one in
+// the body, and clears it when the body carries no tags. Like updateNote the id is checked and
+// the note loaded before the body is looked at, so a missing note is a 404 even when the body is
+// invalid too. The replacement is all or nothing: a rejected request stores nothing.
+func putNoteTags(db *sqlx.DB) echo.HandlerFunc {
+	return func(c echo.Context) error {
+		id, err := parseNoteID(c)
+		if err != nil {
+			return writeError(c, http.StatusBadRequest, "invalid note id")
+		}
+
+		var note Note
+		err = db.GetContext(c.Request().Context(), &note,
+			"SELECT id, title, body, created_at FROM notes WHERE id = ?", id)
+		if errors.Is(err, sql.ErrNoRows) {
+			return writeError(c, http.StatusNotFound, "note not found")
+		}
+		if err != nil {
+			return writeError(c, http.StatusInternalServerError, "loading note")
+		}
+
+		var req tagsRequest
+		if err := c.Bind(&req); err != nil {
+			return writeError(c, http.StatusBadRequest, "invalid JSON body")
+		}
+		names, err := normalizeTags(req.Tags)
+		if err != nil {
+			return writeError(c, http.StatusBadRequest, err.Error())
+		}
+
+		if err := replaceTags(c.Request().Context(), db, note.ID, names); err != nil {
+			return writeError(c, http.StatusInternalServerError, "updating tags")
+		}
+
+		// The response carries the set that was just stored, loaded the same way a later GET
+		// would load it, so it is sorted ascending and [] rather than null when it is empty.
+		note.Tags = []string{}
+		tags, err := loadTags(c.Request().Context(), db, []int64{note.ID})
+		if err != nil {
+			return writeError(c, http.StatusInternalServerError, "updating tags")
+		}
+		if stored, ok := tags[note.ID]; ok {
+			note.Tags = stored
+		}
 		return c.JSON(http.StatusOK, note)
 	}
 }
@@ -173,6 +281,15 @@ func getNote(db *sqlx.DB) echo.HandlerFunc {
 		}
 		if err != nil {
 			return writeError(c, http.StatusInternalServerError, "loading note")
+		}
+
+		note.Tags = []string{}
+		tags, err := loadTags(c.Request().Context(), db, []int64{note.ID})
+		if err != nil {
+			return writeError(c, http.StatusInternalServerError, "loading note")
+		}
+		if names, ok := tags[note.ID]; ok {
+			note.Tags = names
 		}
 		return c.JSON(http.StatusOK, note)
 	}

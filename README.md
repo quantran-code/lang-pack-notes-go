@@ -24,14 +24,30 @@ PORT=8080 DB_PATH=notes.db go run ./cmd/server
 |---|---|---|
 | GET | `/health` | `{"status":"ok"}` |
 | POST | `/notes` | `{title, body?}`; title 1-200 characters, `201` with the note |
-| GET | `/notes` | every note, oldest first; `[]` when empty |
+| GET | `/notes` | every note, oldest first; `[]` when empty; `?tag=<name>` lists only the notes carrying that tag |
 | GET | `/notes/:id` | `400` for a bad id, `404` for a missing note |
-| PUT | `/notes/:id` | `{title, body?}`; fully replaces title and body (an omitted body becomes `""`), `id` and `created_at` are kept, `200` with the updated note |
+| PUT | `/notes/:id` | `{title, body?}`; fully replaces title and body (an omitted body becomes `""`), `id`, `created_at` and the tags are kept, `200` with the updated note |
+| PUT | `/notes/:id/tags` | `{tags?}`; replaces the note's tags with that set (an omitted or `null` field and `[]` all clear them), `200` with the note; `400` `tag must be 1 to 30 characters of a-z, 0-9 and -` or `a note has at most 10 tags`, `404` `note not found` |
 | DELETE | `/notes/:id` | `204` with no body |
 
 Every error body is `{"error": "<message>"}`. On every note route a non-numeric or non-positive id
 is `400` `invalid note id` and a missing note is `404` `note not found` — on `PUT` that `404` wins
 even when the body is invalid too, and a second `DELETE` of the same note is a `404` as well.
+
+### Tags
+
+A tag is 1 to 30 characters of `a-z`, `0-9` and `-`, and a note has at most 10 tags — duplicates in
+a request count once. Anything else is a `400` carrying the rule that was broken: `tag must be 1 to
+30 characters of a-z, 0-9 and -` or `a note has at most 10 tags`. The replacement is all or nothing:
+a rejected request stores nothing and the note keeps the tags it had.
+
+Every note in every response carries a `tags` field: a sorted array of its tag names, `[]` (never
+`null`) when it has none. Only `PUT /notes/:id/tags` changes the tags — `POST /notes` still takes
+just `{title, body?}` and creates an untagged note, and `PUT /notes/:id` leaves the tags untouched.
+
+`GET /notes?tag=<name>` lists only the notes carrying that tag, each once, with its whole tag set.
+An unknown tag, and any value that is not a valid tag at all, answers `200` with `[]` rather than a
+`400`.
 
 ## Conventions
 

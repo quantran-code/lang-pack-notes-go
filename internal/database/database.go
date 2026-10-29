@@ -30,6 +30,14 @@ func Open(dsn string) (*sqlx.DB, error) {
 	}
 	db.SetMaxOpenConns(1)
 
+	// SQLite enforces foreign keys only when this pragma is on, and it is off by default. The
+	// pool above holds a single connection, so switching it on here covers every later query.
+	// It runs before the migrations so the ON DELETE CASCADE of note_tags is real from the start.
+	if _, err := db.Exec("PRAGMA foreign_keys = ON"); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("enabling foreign keys: %w", err)
+	}
+
 	if err := migrateUp(db); err != nil {
 		_ = db.Close()
 		return nil, err
