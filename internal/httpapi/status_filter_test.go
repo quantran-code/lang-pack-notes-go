@@ -9,7 +9,8 @@ import (
 )
 
 // TestListNotesByStatus checks GET /notes?status=<name>: it lists only the notes in that status, in
-// id order, accepts the name in any case, and still lists every note when the parameter is absent.
+// created_at order, accepts the name in any case, and still lists every note when the parameter is
+// absent.
 func TestListNotesByStatus(t *testing.T) {
 	e := newTestRouter(t)
 
@@ -26,18 +27,18 @@ func TestListNotesByStatus(t *testing.T) {
 	tests := []struct {
 		name   string
 		target string
-		want   []int64
+		want   []string
 	}{
-		{"draft", "/notes?status=draft", []int64{draft.ID}},
-		{"published", "/notes?status=published", []int64{published.ID}},
-		{"archived", "/notes?status=archived", []int64{archived.ID}},
-		{"any case", "/notes?status=PuBlIsHeD", []int64{published.ID}},
-		{"absent parameter lists every note", "/notes", []int64{draft.ID, published.ID, archived.ID}},
+		{"draft", "/notes?status=draft", []string{draft.ID}},
+		{"published", "/notes?status=published", []string{published.ID}},
+		{"archived", "/notes?status=archived", []string{archived.ID}},
+		{"any case", "/notes?status=PuBlIsHeD", []string{published.ID}},
+		{"absent parameter lists every note", "/notes", []string{draft.ID, published.ID, archived.ID}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			notes := loadNotes(t, e, tt.target)
-			ids := make([]int64, 0, len(notes))
+			ids := make([]string, 0, len(notes))
 			for _, note := range notes {
 				ids = append(ids, note.ID)
 			}
@@ -94,8 +95,8 @@ func TestListNotesStatusAndTag(t *testing.T) {
 	// Without the tag half every published note is listed, whatever its tags.
 	notes = loadNotes(t, e, "/notes?status=published")
 	require.Len(t, notes, 3)
-	assert.Equal(t, []int64{goPublished.ID, echoPublished.ID, untagged.ID},
-		[]int64{notes[0].ID, notes[1].ID, notes[2].ID})
+	assert.Equal(t, []string{goPublished.ID, echoPublished.ID, untagged.ID},
+		[]string{notes[0].ID, notes[1].ID, notes[2].ID})
 	assert.Equal(t, []string{}, notes[2].Tags, "an untagged note lists [] and not null")
 
 	// An unknown tag, and any value that cannot be a tag at all, answer [] with a 200 rather than

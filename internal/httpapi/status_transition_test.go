@@ -3,7 +3,6 @@ package httpapi
 import (
 	"encoding/json"
 	"net/http"
-	"strconv"
 	"sync"
 	"testing"
 
@@ -12,9 +11,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// transitionPath is the path of the publish or archive action on the note with the given id.
-func transitionPath(id int64, action string) string {
-	return "/notes/" + strconv.FormatInt(id, 10) + "/" + action
+// transitionPath is the path of the publish or archive action on the note with the given UUID.
+func transitionPath(id string, action string) string {
+	return "/notes/" + id + "/" + action
 }
 
 // createWithStatus posts the given body to POST /notes and returns the note the API stored.
@@ -84,7 +83,7 @@ func TestStatusTransitionErrors(t *testing.T) {
 
 	conflicts := []struct {
 		name   string
-		id     int64
+		id     string
 		action string
 	}{
 		{"publishing a published note", published.ID, "publish"},
@@ -102,7 +101,7 @@ func TestStatusTransitionErrors(t *testing.T) {
 		})
 	}
 
-	for _, target := range []string{"/notes/99/publish", "/notes/99/archive"} {
+	for _, target := range []string{transitionPath(unknownNoteID, "publish"), transitionPath(unknownNoteID, "archive")} {
 		rec := do(t, e, http.MethodPost, target, "")
 		assert.Equal(t, http.StatusNotFound, rec.Code, target)
 		assert.JSONEq(t, `{"error":"note not found"}`, rec.Body.String(), target)

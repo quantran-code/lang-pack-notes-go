@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/go-playground/validator/v10"
+	"github.com/google/uuid"
 	"github.com/jmoiron/sqlx"
 	"github.com/labstack/echo/v4"
 )
@@ -127,27 +128,22 @@ func bulkCreateNotes(db *sqlx.DB) echo.HandlerFunc {
 		}
 		defer func() { _ = tx.Rollback() }()
 
-		// Every note is built the way createNote builds one: title trimmed, body as sent, status a
-		// draft and an empty rather than nil tag set so it marshals as [].
+		// Every note is built the way createNote builds one: the id generated here, title trimmed,
+		// body as sent, status a draft and an empty rather than nil tag set so it marshals as [].
 		notes := make([]Note, 0, len(req.Notes))
 		for _, input := range req.Notes {
 			note := Note{
+				ID:        uuid.New().String(),
 				Title:     strings.TrimSpace(input.Title),
 				Body:      input.Body,
 				CreatedAt: time.Now().UTC(),
 				Status:    StatusDraft,
 				Tags:      []string{},
 			}
-			result, err := tx.NamedExecContext(ctx,
-				"INSERT INTO notes (title, body, created_at, status) VALUES (:title, :body, :created_at, :status)", note)
-			if err != nil {
+			if _, err := tx.NamedExecContext(ctx,
+				"INSERT INTO notes (id, title, body, created_at, status) VALUES (:id, :title, :body, :created_at, :status)", note); err != nil {
 				return writeError(c, http.StatusInternalServerError, "creating notes")
 			}
-			id, err := result.LastInsertId()
-			if err != nil {
-				return writeError(c, http.StatusInternalServerError, "creating notes")
-			}
-			note.ID = id
 			notes = append(notes, note)
 		}
 

@@ -50,11 +50,12 @@ func normalizeTags(tags []string) ([]string, error) {
 	return names, nil
 }
 
-// loadTags returns the tag names of every requested note, keyed by note id and sorted ascending.
-// It is one statement for the whole slice of ids, never one per note, so listing a page of notes
-// costs the same number of queries whatever its size. A note without tags is absent from the map.
-func loadTags(ctx context.Context, db *sqlx.DB, noteIDs []int64) (map[int64][]string, error) {
-	tags := make(map[int64][]string, len(noteIDs))
+// loadTags returns the tag names of every requested note, keyed by the note's UUID and sorted
+// ascending. It is one statement for the whole slice of ids, never one per note, so listing a page
+// of notes costs the same number of queries whatever its size. A note without tags is absent from
+// the map.
+func loadTags(ctx context.Context, db *sqlx.DB, noteIDs []string) (map[string][]string, error) {
+	tags := make(map[string][]string, len(noteIDs))
 	if len(noteIDs) == 0 {
 		return tags, nil
 	}
@@ -73,7 +74,7 @@ func loadTags(ctx context.Context, db *sqlx.DB, noteIDs []int64) (map[int64][]st
 
 	for rows.Next() {
 		var (
-			noteID int64
+			noteID string
 			name   string
 		)
 		if err := rows.Scan(&noteID, &name); err != nil {
@@ -90,7 +91,7 @@ func loadTags(ctx context.Context, db *sqlx.DB, noteIDs []int64) (map[int64][]st
 // replaceTags makes the note's tags exactly names. Every write runs inside one transaction, so a
 // failure part-way leaves the note's previous tags in place. Empty names clears the note's tags.
 // Tag rows are shared: a name already stored is reused instead of inserted twice.
-func replaceTags(ctx context.Context, db *sqlx.DB, noteID int64, names []string) error {
+func replaceTags(ctx context.Context, db *sqlx.DB, noteID string, names []string) error {
 	tx, err := db.BeginTxx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("starting tags transaction: %w", err)
@@ -98,7 +99,7 @@ func replaceTags(ctx context.Context, db *sqlx.DB, noteID int64, names []string)
 	defer func() { _ = tx.Rollback() }()
 
 	if _, err := tx.ExecContext(ctx, "DELETE FROM note_tags WHERE note_id = ?", noteID); err != nil {
-		return fmt.Errorf("clearing tags of note %d: %w", noteID, err)
+		return fmt.Errorf("clearing tags of note %s: %w", noteID, err)
 	}
 
 	for _, name := range names {
@@ -117,7 +118,7 @@ func replaceTags(ctx context.Context, db *sqlx.DB, noteID int64, names []string)
 	}
 
 	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("committing tags of note %d: %w", noteID, err)
+		return fmt.Errorf("committing tags of note %s: %w", noteID, err)
 	}
 	return nil
 }

@@ -43,7 +43,7 @@ func transitionNote(db *sqlx.DB, from, to NoteStatus) echo.HandlerFunc {
 		}
 		if affected == 0 {
 			// Nothing moved: either there is no such note, or it was not in the from status.
-			var existing int64
+			var existing string
 			err := db.GetContext(ctx, &existing, "SELECT id FROM notes WHERE id = ?", id)
 			if errors.Is(err, sql.ErrNoRows) {
 				return writeError(c, http.StatusNotFound, "note not found")
@@ -66,7 +66,7 @@ func transitionNote(db *sqlx.DB, from, to NoteStatus) echo.HandlerFunc {
 		}
 
 		note.Tags = []string{}
-		tags, err := loadTags(ctx, db, []int64{note.ID})
+		tags, err := loadTags(ctx, db, []string{note.ID})
 		if err != nil {
 			return writeError(c, http.StatusInternalServerError, "loading note")
 		}

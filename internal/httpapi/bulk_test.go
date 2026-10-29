@@ -39,10 +39,10 @@ func TestBulkCreateNotes(t *testing.T) {
 	require.Len(t, created.Notes, 2, "one element per request note")
 
 	first, second := created.Notes[0], created.Notes[1]
-	assert.NotZero(t, first.ID)
-	assert.NotZero(t, second.ID)
-	assert.Less(t, first.ID, second.ID, "ids rise with insert order")
-	assert.Less(t, existing.ID, first.ID, "the imported notes are new notes")
+	requireCanonicalID(t, first.ID)
+	requireCanonicalID(t, second.ID)
+	assert.NotEqual(t, first.ID, second.ID, "every imported note gets its own id")
+	assert.NotEqual(t, existing.ID, first.ID, "the imported notes are new notes")
 	assert.Equal(t, "first", first.Title, "the stored title is trimmed")
 	assert.Equal(t, "a", first.Body, "the body is stored exactly as sent")
 	assert.Equal(t, StatusDraft, first.Status, "a status is never taken from the request")
@@ -70,8 +70,8 @@ func TestBulkCreateNotes(t *testing.T) {
 	// The list shows the note that was there before, then the imported ones in request order.
 	notes := loadNotes(t, e, "/notes")
 	require.Len(t, notes, 3)
-	assert.Equal(t, []int64{existing.ID, first.ID, second.ID},
-		[]int64{notes[0].ID, notes[1].ID, notes[2].ID})
+	assert.Equal(t, []string{existing.ID, first.ID, second.ID},
+		[]string{notes[0].ID, notes[1].ID, notes[2].ID}, "the list is in created_at order")
 
 	// A single note is the same shape with one element.
 	payload, err = json.Marshal(bulkNotesRequest{Notes: []bulkNoteInput{{Title: "alone"}}})
@@ -165,7 +165,7 @@ func TestBulkCreateNotesAllOrNothing(t *testing.T) {
 
 	assert.Empty(t, loadNotes(t, e, "/notes"), "the first insert was rolled back with the second")
 
-	rec = do(t, e, http.MethodGet, "/notes/1", "")
+	rec = do(t, e, http.MethodGet, notePath(unknownNoteID), "")
 	assert.Equal(t, http.StatusNotFound, rec.Code)
 	assert.JSONEq(t, `{"error":"note not found"}`, rec.Body.String())
 }

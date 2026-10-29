@@ -12,15 +12,15 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// tagsPath is the path of the tag-replacement route of the note with the given id.
-func tagsPath(id int64) string {
-	return "/notes/" + strconv.FormatInt(id, 10) + "/tags"
+// tagsPath is the path of the tag-replacement route of the note with the given UUID.
+func tagsPath(id string) string {
+	return "/notes/" + id + "/tags"
 }
 
 // loadNote fetches a note through GET /notes/:id and fails when it is missing.
-func loadNote(t *testing.T, e *echo.Echo, id int64) Note {
+func loadNote(t *testing.T, e *echo.Echo, id string) Note {
 	t.Helper()
-	rec := do(t, e, http.MethodGet, "/notes/"+strconv.FormatInt(id, 10), "")
+	rec := do(t, e, http.MethodGet, notePath(id), "")
 	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
 	var note Note
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &note))
@@ -97,7 +97,7 @@ func TestPutNoteTags(t *testing.T) {
 	assert.Equal(t, []string{"go"}, loadNote(t, e, first.ID).Tags)
 
 	// The full replacement of title and body leaves the tags exactly as they were.
-	rec = do(t, e, http.MethodPut, "/notes/"+strconv.FormatInt(first.ID, 10), `{"title":"renamed"}`)
+	rec = do(t, e, http.MethodPut, notePath(first.ID), `{"title":"renamed"}`)
 	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &updated))
 	assert.Equal(t, "renamed", updated.Title)
@@ -210,7 +210,7 @@ func TestPutNoteTagsErrors(t *testing.T) {
 	}
 
 	for _, body := range []string{`{"tags":["go"]}`, `{}`, `{"tags":["GO!"]}`, `{"tags":`, `{"tags":["` + strings.Repeat("a", maxTagLength+1) + `"]}`} {
-		rec := do(t, e, http.MethodPut, "/notes/99/tags", body)
+		rec := do(t, e, http.MethodPut, tagsPath(unknownNoteID), body)
 		assert.Equal(t, http.StatusNotFound, rec.Code, body)
 		assert.JSONEq(t, `{"error":"note not found"}`, rec.Body.String(), body)
 	}

@@ -7,6 +7,13 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// Two canonical lowercase hyphenated UUID v4 literals, the form the notes table keys on, so a test
+// can name a note it inserted without reading the id back first.
+const (
+	testNoteID      = "3f2a6c1e-0b7d-4a52-9c8e-6d1f4b2a7c30"
+	testOtherNoteID = "8b1d4e6f-2c39-4b7a-9e51-0f6c3a8d2b14"
+)
+
 func TestOpenAppliesMigrations(t *testing.T) {
 	db, err := Open(MemoryDSN)
 	require.NoError(t, err)
@@ -14,9 +21,9 @@ func TestOpenAppliesMigrations(t *testing.T) {
 
 	var version int
 	require.NoError(t, db.Get(&version, "SELECT version FROM schema_migrations"))
-	assert.Equal(t, 3, version)
+	assert.Equal(t, 4, version)
 
-	_, err = db.Exec("INSERT INTO notes (title, body, created_at) VALUES ('t', 'b', CURRENT_TIMESTAMP)")
+	_, err = db.Exec("INSERT INTO notes (id, title, body, created_at) VALUES (?, 't', 'b', CURRENT_TIMESTAMP)", testNoteID)
 	assert.NoError(t, err)
 }
 
@@ -27,11 +34,11 @@ func TestMigrationsAreReversible(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = db.Close() })
 
-	_, err = db.Exec("INSERT INTO notes (title, body, created_at) VALUES ('kept', 'b', CURRENT_TIMESTAMP)")
+	_, err = db.Exec("INSERT INTO notes (id, title, body, created_at) VALUES (?, 'kept', 'b', CURRENT_TIMESTAMP)", testNoteID)
 	require.NoError(t, err)
 	_, err = db.Exec("INSERT INTO tags (name) VALUES ('go')")
 	require.NoError(t, err)
-	_, err = db.Exec("INSERT INTO note_tags (note_id, tag_id) VALUES (1, 1)")
+	_, err = db.Exec("INSERT INTO note_tags (note_id, tag_id) VALUES (?, 1)", testNoteID)
 	require.NoError(t, err)
 
 	down, err := migrationsFS.ReadFile("migrations/000002_create_tags.down.sql")
@@ -46,7 +53,7 @@ func TestMigrationsAreReversible(t *testing.T) {
 	}
 
 	var title string
-	require.NoError(t, db.Get(&title, "SELECT title FROM notes WHERE id = 1"))
+	require.NoError(t, db.Get(&title, "SELECT title FROM notes WHERE id = ?", testNoteID))
 	assert.Equal(t, "kept", title, "the notes table and its rows survive")
 }
 
@@ -58,7 +65,7 @@ func TestNoteStatusMigrationIsReversible(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = db.Close() })
 
-	_, err = db.Exec("INSERT INTO notes (title, body, created_at, status) VALUES ('kept', 'b', CURRENT_TIMESTAMP, 2)")
+	_, err = db.Exec("INSERT INTO notes (id, title, body, created_at, status) VALUES (?, 'kept', 'b', CURRENT_TIMESTAMP, 2)", testNoteID)
 	require.NoError(t, err)
 
 	down, err := migrationsFS.ReadFile("migrations/000003_add_note_status.down.sql")
@@ -71,11 +78,11 @@ func TestNoteStatusMigrationIsReversible(t *testing.T) {
 	assert.Equal(t, 0, n, "the status column is gone")
 
 	var title string
-	require.NoError(t, db.Get(&title, "SELECT title FROM notes WHERE id = 1"))
+	require.NoError(t, db.Get(&title, "SELECT title FROM notes WHERE id = ?", testNoteID))
 	assert.Equal(t, "kept", title, "the notes table and its rows survive")
 
 	// A note created while the column was absent has no status of its own to restore.
-	_, err = db.Exec("INSERT INTO notes (title, body, created_at) VALUES ('added', 'b', CURRENT_TIMESTAMP)")
+	_, err = db.Exec("INSERT INTO notes (id, title, body, created_at) VALUES (?, 'added', 'b', CURRENT_TIMESTAMP)", testOtherNoteID)
 	require.NoError(t, err)
 
 	up, err := migrationsFS.ReadFile("migrations/000003_add_note_status.up.sql")
@@ -87,19 +94,19 @@ func TestNoteStatusMigrationIsReversible(t *testing.T) {
 	assert.Equal(t, 1, n, "the status column is back")
 
 	for _, want := range []struct {
-		id     int64
+		id     string
 		title  string
 		status int
 	}{
-		{1, "kept", 0},
-		{2, "added", 0},
+		{testNoteID, "kept", 0},
+		{testOtherNoteID, "added", 0},
 	} {
 		require.NoError(t, db.Get(&title, "SELECT title FROM notes WHERE id = ?", want.id))
-		assert.Equal(t, want.title, title, "note %d keeps its row", want.id)
+		assert.Equal(t, want.title, title, "note %s keeps its row", want.id)
 
 		var status int
 		require.NoError(t, db.Get(&status, "SELECT status FROM notes WHERE id = ?", want.id))
-		assert.Equal(t, want.status, status, "note %d is a draft", want.id)
+		assert.Equal(t, want.status, status, "note %s is a draft", want.id)
 	}
 }
 
@@ -110,14 +117,14 @@ func TestDeletingNoteCascadesNoteTags(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = db.Close() })
 
-	_, err = db.Exec("INSERT INTO notes (title, body, created_at) VALUES ('t', 'b', CURRENT_TIMESTAMP)")
+	_, err = db.Exec("INSERT INTO notes (id, title, body, created_at) VALUES (?, 't', 'b', CURRENT_TIMESTAMP)", testNoteID)
 	require.NoError(t, err)
 	_, err = db.Exec("INSERT INTO tags (name) VALUES ('go')")
 	require.NoError(t, err)
-	_, err = db.Exec("INSERT INTO note_tags (note_id, tag_id) VALUES (1, 1)")
+	_, err = db.Exec("INSERT INTO note_tags (note_id, tag_id) VALUES (?, 1)", testNoteID)
 	require.NoError(t, err)
 
-	_, err = db.Exec("DELETE FROM notes WHERE id = 1")
+	_, err = db.Exec("DELETE FROM notes WHERE id = ?", testNoteID)
 	require.NoError(t, err)
 
 	var n int
@@ -137,7 +144,7 @@ func TestOpenGivesEachCallItsOwnDatabase(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = second.Close() })
 
-	_, err = first.Exec("INSERT INTO notes (title, body, created_at) VALUES ('t', 'b', CURRENT_TIMESTAMP)")
+	_, err = first.Exec("INSERT INTO notes (id, title, body, created_at) VALUES (?, 't', 'b', CURRENT_TIMESTAMP)", testNoteID)
 	require.NoError(t, err)
 
 	var n int

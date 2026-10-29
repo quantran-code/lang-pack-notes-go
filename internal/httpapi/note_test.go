@@ -41,7 +41,7 @@ func TestCreateNote(t *testing.T) {
 			}
 			var note Note
 			require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &note))
-			assert.Equal(t, int64(1), note.ID)
+			requireCanonicalID(t, note.ID)
 			assert.False(t, note.CreatedAt.IsZero())
 		})
 	}
@@ -55,7 +55,11 @@ func TestGetAndListNotes(t *testing.T) {
 	assert.JSONEq(t, `[]`, rec.Body.String(), "an empty list is [] and not null")
 
 	require.Equal(t, http.StatusCreated, do(t, e, http.MethodPost, "/notes", `{"title":"first","body":"a"}`).Code)
-	require.Equal(t, http.StatusCreated, do(t, e, http.MethodPost, "/notes", `{"title":"second"}`).Code)
+	rec = do(t, e, http.MethodPost, "/notes", `{"title":"second"}`)
+	require.Equal(t, http.StatusCreated, rec.Code, rec.Body.String())
+	var created Note
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &created))
+	requireCanonicalID(t, created.ID)
 
 	var notes []Note
 	rec = do(t, e, http.MethodGet, "/notes", "")
@@ -64,11 +68,13 @@ func TestGetAndListNotes(t *testing.T) {
 	assert.Equal(t, "first", notes[0].Title)
 	assert.Equal(t, "second", notes[1].Title)
 
-	rec = do(t, e, http.MethodGet, "/notes/2", "")
+	// The second note is fetched by the id the create response gave it.
+	rec = do(t, e, http.MethodGet, notePath(created.ID), "")
 	require.Equal(t, http.StatusOK, rec.Code)
 	var note Note
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &note))
 	assert.Equal(t, "second", note.Title)
+	assert.Equal(t, created.ID, note.ID)
 }
 
 func TestGetNoteErrors(t *testing.T) {
@@ -78,9 +84,10 @@ func TestGetNoteErrors(t *testing.T) {
 		status int
 		errMsg string
 	}{
-		{"missing", "/notes/99", http.StatusNotFound, "note not found"},
-		{"not a number", "/notes/abc", http.StatusBadRequest, "invalid note id"},
-		{"zero", "/notes/0", http.StatusBadRequest, "invalid note id"},
+		{"missing", notePath(unknownNoteID), http.StatusNotFound, "note not found"},
+		{"not a UUID", "/notes/abc", http.StatusBadRequest, "invalid note id"},
+		{"integer", "/notes/0", http.StatusBadRequest, "invalid note id"},
+		{"uppercase UUID", notePath(strings.ToUpper(canonicalUUID)), http.StatusBadRequest, "invalid note id"},
 		{"unknown path", "/nope", http.StatusNotFound, "Not Found"},
 	}
 	for _, tt := range tests {

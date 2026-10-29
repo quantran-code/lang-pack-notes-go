@@ -39,6 +39,7 @@ func TestCreateNoteStatus(t *testing.T) {
 
 			var created Note
 			require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &created))
+			requireCanonicalID(t, created.ID)
 			assert.Equal(t, tt.status, created.Status, "the status sent is the status stored")
 
 			assert.Equal(t, tt.status, loadNote(t, e, created.ID).Status, "GET /notes/:id reports it")
@@ -70,6 +71,7 @@ func TestPutNoteIgnoresStatus(t *testing.T) {
 	require.Equal(t, http.StatusCreated, rec.Code, rec.Body.String())
 	var created Note
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &created))
+	requireCanonicalID(t, created.ID)
 	require.Equal(t, StatusArchived, created.Status)
 	before := loadNote(t, e, created.ID)
 
